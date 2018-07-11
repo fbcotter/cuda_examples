@@ -61,13 +61,15 @@ float* dest, const float* src, const float *w, int N, int C, int H, int W, int M
 rowfilter_pad_kernel = """
 extern "C"
 __global__ void rowfilter_pad(
-float* dest, const float* src, const float *w, int N, int C, int H, int W, int Mlow, int Mhigh) {
+    float* dest, const float* src, const float *w, int N, int C, int H, int W,
+    int Mlow, int Mhigh, int rev) {
 /* dest - output array. should be same shape as input
    src - input array
    w - input kernel. Should be a 1d array
    N, C, H, W - input tensor sizes
    Mlow - idx of most negative filter tap
    Mhigh - idx of most positive filter tap
+   rev - if nonzero will do correlation rather than convolution.
 */
     for (int i = blockIdx.x * blockDim.x + threadIdx.x;
          i < N*C*H*W; i += blockDim.x * gridDim.x) {
@@ -77,6 +79,7 @@ float* dest, const float* src, const float *w, int N, int C, int H, int W, int M
         const int x = i % W;
         float value = 0;
         // Use convolution formula: y[n] = sum h[k]*x[n-k]
+#pragma unroll
         for (int k = Mlow; k <= Mhigh; k++) {
             int x_in = x - k;
 
@@ -94,7 +97,7 @@ float* dest, const float* src, const float *w, int N, int C, int H, int W, int M
             x_in = (group == 1) ? (W-1) - res : res;
 
             const int offset = n*C*H*W + c*H*W + y*W + x_in;
-            value += w[k-Mlow]*src[offset];
+            value += rev ? w[k-Mlow] * src[offset] : w[Mhigh-k] * src[offset];
         }
         dest[i] = value;
     }
@@ -158,21 +161,37 @@ class RowFilter_pad(Function):
         self.weight = weight
         self.klow = klow
         self.khigh = khigh
+        self.f = load_kernel('rowfilter_pad', rowfilter_pad_kernel)
 
-    def forward(self, input):
-        assert input.dim() == 4 and input.is_cuda and self.weight.is_cuda
+    #  @staticmethod
+    def forward(ctx, input):
+        assert input.dim() == 4 and input.is_cuda and ctx.weight.is_cuda
         n, ch, h, w = input.shape
         output = torch.zeros_like(input)
 
         with torch.cuda.device_of(input):
-            f = load_kernel('rowfilter_pad', rowfilter_pad_kernel)
-            f(block=(CUDA_NUM_THREADS,1,1),
-              grid=(128,1,1),
-              args=[output.data_ptr(), input.data_ptr(), self.weight.data_ptr(),
-                    np.int32(n), np.int32(ch), np.int32(h), np.int32(w),
-                    np.int32(self.klow), np.int32(self.khigh)],
+            ctx.f(block=(CUDA_NUM_THREADS,1,1),
+                  grid=(128,1,1),
+                  args=[output.data_ptr(), input.data_ptr(),
+                        ctx.weight.data_ptr(), np.int32(n), np.int32(ch),
+                        np.int32(h), np.int32(w), np.int32(ctx.klow),
+                        np.int32(ctx.khigh), np.int32(0)],
               stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
         return output
+
+    #  @staticmethod
+    def backward(ctx, grad_out):
+        grad_input = torch.zeros_like(grad_out)
+        n, ch, h, w = grad_out.shape
+        with torch.cuda.device_of(grad_out):
+            ctx.f(block=(CUDA_NUM_THREADS,1,1),
+                  grid=(128,1,1),
+                  args=[grad_input.data_ptr(), grad_out.data_ptr(),
+                        ctx.weight.data_ptr(), np.int32(n), np.int32(ch),
+                        np.int32(h), np.int32(w), np.int32(-ctx.khigh),
+                        np.int32(-ctx.klow), np.int32(1)],
+              stream=Stream(ptr=torch.cuda.current_stream().cuda_stream))
+        return grad_input
 
 
 if __name__ == '__main__':
@@ -184,9 +203,10 @@ if __name__ == '__main__':
                   axis=0).astype('float32')
     a = np.repeat(np.expand_dims(a, axis=0), repeats=3, axis=0)
     a = np.repeat(np.expand_dims(a, axis=0), repeats=2, axis=0)
-    w = np.array([[1,1,1,1,1]]).astype('float32')
+    w = np.array([[1,1,1,1]]).astype('float32')
 
-    a_t = torch.tensor(a).cuda()
+    a_t = torch.tensor(a, requires_grad=True)
+    a_t_gpu = a_t.cuda()
     w_t = np.reshape(w[:,::-1], [1, 1, *w.shape])
     w_t = np.repeat(w_t, repeats=3, axis=0)
     w_t = np.copy(w_t)
@@ -196,26 +216,34 @@ if __name__ == '__main__':
     c = a.shape[3]
     xe = reflect(np.arange(-m2, c+m2, dtype='int32'), -0.5, c-0.5)
     # Run once to 'burn in'
-    y_t = F.conv2d(a_t[:,:,:,xe], w_t, groups=3)
+    y_t = F.conv2d(a_t_gpu[:,:,:,xe], w_t, groups=3)
     start = time.time()
     for i in range(10):
-        y_t = F.conv2d(a_t[:,:,:,xe], w_t, groups=3)
+        y_t = F.conv2d(a_t_gpu[:,:,:,xe], w_t, groups=3)
     print('Torch implementation took on avg (10 runs):\t{}'.format((time.time()-start)/10))
+    y_t.backward(torch.ones_like(y_t))
+    grad1 = a_t.grad.data.numpy()
+    a_t.grad.data.zero_()
 
     #
     w_t2 = torch.tensor(w, dtype=torch.float32).cuda()
     mod = RowFilter()
-    y_t2 = mod(a_t, w_t2)
+    y_t2 = mod(a_t_gpu, w_t2)
     start = time.time()
     for i in range(10):
-        y_t2 = mod(a_t, w_t2)
+        y_t2 = mod(a_t_gpu, w_t2)
     print('My implementation took on avg (10 runs):\t{}'.format((time.time()-start)/10))
 
     mod = RowFilter_pad(w_t2, -m2+(1-m%2), m2)
-    y_t3 = mod(a_t)
+    y_t3 = mod(a_t_gpu)
     start = time.time()
     for i in range(10):
-        y_t3 = mod(a_t)
+        y_t3 = mod(a_t_gpu)
     print('My implementation took on avg (10 runs):\t{}'.format((time.time()-start)/10))
+    y_t3.backward(torch.ones_like(y_t3))
+    grad2 = a_t.grad.data.numpy()
+    a_t.grad.data.zero_()
 
-    np.testing.assert_array_almost_equal(y_t, y_t3, decimal=4)
+    #  np.testing.assert_array_almost_equal(y_t.data.detach().numpy(), y_t3.data.detach().numpy(), decimal=4)
+    np.testing.assert_array_almost_equal(y_t.cpu().detach().numpy(), y_t3.cpu().detach().numpy(), decimal=4)
+    np.testing.assert_array_almost_equal(grad1, grad2, decimal=4)
