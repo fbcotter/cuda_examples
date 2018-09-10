@@ -1,8 +1,8 @@
-""" Example 3
+""" Example 3a
 
-This example is something that is better suited for a gpu - convolution. I used
-to be very afraid to write my own convolution code. Here I give it a go and
-compare to scipy's convolve2d.
+Same as example 3, but now on multiple images. I use a foor loop in python
+(which is a little unfair as this is notoriously slow) calling convolve2d in
+each iteration.
 """
 import numpy as np
 import time
@@ -70,7 +70,7 @@ if __name__ == '__main__':
         a = np.repeat(np.expand_dims(a, axis=0), repeats=2, axis=0)
         w = np.random.randn(1, 5).astype('float32')
     else:
-        a = np.random.randn(1,1,128,128).astype('float32')
+        a = np.random.randn(1,64,128,128).astype('float32')
         w = np.random.randn(1,11).astype('float32')
 
     print('''Convolving an input of shape {} with a filter of shape {} in numpy

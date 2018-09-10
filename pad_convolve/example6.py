@@ -20,12 +20,6 @@ Stream = namedtuple('Stream', ['ptr'])
 
 CUDA_NUM_THREADS = 1024
 
-kernel_loop = '''
-#define CUDA_KERNEL_LOOP(i, n)
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x;
-      i < (n);
-      i += blockDim.x * gridDim.x)
-'''
 
 rowfilter_kernel = """
 extern "C"

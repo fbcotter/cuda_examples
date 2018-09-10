@@ -3,23 +3,17 @@
 import numpy as np
 import time
 import pycuda.driver as cuda
-import pycuda.autoinit
+import pycuda.autoinit  # noqa
 from pycuda.compiler import SourceModule
 import torch
 import torch.nn.functional as F
-from scipy.signal import convolve2d
 
-kernel_loop = '''
-#define CUDA_KERNEL_LOOP(i, n)
-  for (int i = blockIdx.x * blockDim.x + threadIdx.x;
-      i < (n);
-      i += blockDim.x * gridDim.x)
-'''
 
 rowfilter_kernel = """
 extern "C"
 __global__ void rowfilter(
-float* dest, const float* src, const float *w, int N, int C, int H, int W, int M) {
+float* dest, const float* src, const float *w,
+  int N, int C, int H, int W, int M) {
 /* dest - output array. should be same shape as input
    src - input array
    w - input kernel. Should be a 1d array
@@ -50,45 +44,9 @@ float* dest, const float* src, const float *w, int N, int C, int H, int W, int M
 }
 """
 
-'''
-const ${Dtype}* bottom_data, const ${Dtype}* weight_data, ${Dtype}* top_data) {
-  CUDA_KERNEL_LOOP(index, ${nthreads}) {
-    const int n = index / ${channels} / ${top_height} / ${top_width};
-    const int c = (index / ${top_height} / ${top_width}) % ${channels};
-    const int h = (index / ${top_width}) % ${top_height};
-    const int w = index % ${top_width};
-    const ${Dtype}* weight = weight_data + c * ${kernel_h} * ${kernel_w};
-    ${Dtype} value = 0;
-    for (int kh = 0; kh < ${kernel_h}; ++kh) {
-      for (int kw = 0; kw < ${kernel_w}; ++kw) {
-        const int h_in = -${pad_h} + h * ${stride_h} + kh * ${dilation_h};
-        const int w_in = -${pad_w} + w * ${stride_w} + kw * ${dilation_w};
-        if ((h_in >= 0) && (h_in < ${bottom_height})
-          && (w_in >= 0) && (w_in < ${bottom_width})) {
-          const int offset = ((n * ${channels} + c) * ${bottom_height} + h_in)
-            * ${bottom_width} + w_in;
-          value += (*weight) * bottom_data[offset];
-        }
-        ++weight;
-      }
-    }
-    top_data[index] = value;
-  }
-}
-'''
-
 
 def reflect(x, minx, maxx):
-    """Reflect the values in matrix *x* about the scalar values *minx* and
-    *maxx*.  Hence a vector *x* containing a long linearly increasing series is
-    converted into a waveform which ramps linearly up and down between *minx*
-    and *maxx*.  If *x* contains integers and *minx* and *maxx* are (integers +
-    0.5), the ramps will have repeated max and min samples.
-
-    .. codeauthor:: Rich Wareham <rjw57@cantab.net>, Aug 2013
-    .. codeauthor:: Nick Kingsbury, Cambridge University, January 1999.
-
-    """
+    """ Do symmetric padding for numpy """
     x = np.asanyarray(x)
     rng = maxx - minx
     rng_by_2 = 2 * rng
@@ -104,6 +62,10 @@ if __name__ == '__main__':
     a = np.random.randn(16, 3, 256, 256).astype('float32')
     w = np.random.randn(1, 11).astype('float32')
 
+    print('''Convolving an input of shape {} with a filter of shape {} in torch
+and cuda (note that this is 2d convolution. the first 2 dimensions of the
+input are batch and channel dimensions\n'''.format(a.shape, w.shape))
+
     a_t = torch.tensor(a).cuda()
     w_t = np.reshape(w[:,::-1], [1, 1, *w.shape])
     w_t = np.repeat(w_t, repeats=3, axis=0)
@@ -112,21 +74,14 @@ if __name__ == '__main__':
     m = w_t.shape[3] // 2
     c = a.shape[3]
     xe = reflect(np.arange(-m, c+m, dtype='int32'), -0.5, c-0.5)
+
     # Run once to 'burn in'
     y_t = F.conv2d(a_t[:,:,:,xe], w_t, groups=3)
+    torch.cuda.synchronize()
     start = time.time()
     y_t = F.conv2d(a_t[:,:,:,xe], w_t, groups=3)
-    print('Torch implementation took {}'.format(time.time()-start))
-
-    # Cuda code:
-    # Typical steps are
-    #   1. Allocate memory on device
-    #   2. Fill memory with data (e.g. copy data from host to device, fill with
-    #       random numbers, etc.)
-    #   3. Call the parallelizable kernel with a set number of blocks and
-    #       threads
-    #   4. Synchronize (wait for completion) and copy data back from device
-    #   5. Free memory
+    torch.cuda.synchronize()
+    torch_time = time.time() - start
 
     # Step 1
     c = a.shape[-1]
@@ -145,21 +100,22 @@ if __name__ == '__main__':
     #  # Step 3 - Create the kernel and call it
     mod = SourceModule(rowfilter_kernel)
     func = mod.get_function('rowfilter')
-    #  start2 = time.time()
-    start2 = time.time()
+    start = time.time()
     func(y_gpu, a_gpu, w_gpu, np.int32(a.shape[0]), np.int32(a.shape[1]),
          np.int32(a.shape[2]), np.int32(a.shape[3]), np.int32(m),
-         grid=(32,1,1), block=(10,1,1))
-    #  func(c_gpu, a_gpu, b_gpu, np.int32(1<<24), grid=(32,1,1), block=(256,1,1))
-    print('Gpu kernel implementation took {}'.format(time.time()-start2))
+         grid=(64,1,1), block=(1024,1,1))
+    torch.cuda.synchronize()
+    cuda_time = time.time() - start
 
     # Synchronize (copy back)
     y2 = np.zeros_like(a).astype('float32')
     cuda.memcpy_dtoh(y2, y_gpu)
     np.testing.assert_array_almost_equal(y_t, y2, decimal=4)
 
+    print('Torch implementation took {:.5f}s'.format(torch_time))
+    print('Gpu kernel implementation took {:.5f}s'.format(cuda_time))
+    print('Speedup: {:.2f}x'.format(torch_time/cuda_time))
     # Free memory
     a_gpu.free()
     w_gpu.free()
     y_gpu.free()
-

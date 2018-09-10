@@ -1,8 +1,4 @@
-""" Example 3
-
-This example is something that is better suited for a gpu - convolution. I used
-to be very afraid to write my own convolution code. Here I give it a go and
-compare to scipy's convolve2d.
+""" CUDA convolution vs scipy convolution
 """
 import numpy as np
 import time
@@ -70,7 +66,7 @@ if __name__ == '__main__':
         a = np.repeat(np.expand_dims(a, axis=0), repeats=2, axis=0)
         w = np.random.randn(1, 5).astype('float32')
     else:
-        a = np.random.randn(1,1,128,128).astype('float32')
+        a = np.random.randn(10,64,128,128).astype('float32')
         w = np.random.randn(1,11).astype('float32')
 
     print('''Convolving an input of shape {} with a filter of shape {} in numpy
