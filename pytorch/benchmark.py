@@ -10,7 +10,7 @@ import torch
 TIME_SCALES = {'s': 1, 'ms': 1000, 'us': 1000000}
 
 parser = argparse.ArgumentParser()
-parser.add_argument('example', choices=['py', 'cpp', 'cuda'])
+parser.add_argument('example', choices=['py', 'torch', 'cpp', 'cuda'])
 parser.add_argument('-b', '--batch-size', type=int, default=16)
 parser.add_argument('-f', '--features', type=int, default=32)
 parser.add_argument('-r', '--runs', type=int, default=100)
@@ -20,6 +20,8 @@ options = parser.parse_args()
 
 if options.example == 'py':
     from soft_thresh_test import SoftShrink
+elif options.example == 'torch':
+    from torch.nn import Softshrink as SoftShrink
 elif options.example == 'cpp':
     from soft_thresh_test import SoftShrinkC as SoftShrink
 else:
@@ -30,11 +32,11 @@ else:
 if options.cuda:
     assert torch.cuda.is_available()
     dev = torch.device('cuda')
-    X = torch.randn(options.batch_size, options.features, 10, 10,
+    X = torch.randn(options.batch_size, options.features, 100, 100,
                     requires_grad=True, device=dev)
     S = SoftShrink(.5).cuda()
 else:
-    X = torch.randn(options.batch_size, options.features, 10, 10,
+    X = torch.randn(options.batch_size, options.features, 100, 100,
                     requires_grad=True)
     S = SoftShrink(.5)
 

@@ -52,3 +52,10 @@ CPP gpu implementation::
 CUDA implementation::
 
   Forward: 76.056/98.617 us | Backward 269.175/315.604 us
+
+
+I still have a problem with the CUDA code - need to work out how to do reduce sums efficiently on GPUs, currently it
+does these very slowly. 
+
+After doing all of this, I found that torch actually has its own Softshrink function... It doesn't calculate the
+gradient with respect to the threshold, but it is a lot faster than my cuda code. Need to find out why...

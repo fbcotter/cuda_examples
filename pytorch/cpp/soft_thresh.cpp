@@ -9,7 +9,7 @@ at::Tensor dx_soft_thresh(
     at::Tensor gain, 
     at::Tensor mag) {
   auto pos = at::_cast_Float(gain > 0.0);
-  return y * (gain + at::pow(input, 2)/at::pow(mag, 2) * (pos - gain));
+  return y * pos;
 }
 
 at::Tensor dt_soft_thresh(

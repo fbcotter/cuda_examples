@@ -9,9 +9,7 @@ std::vector<at::Tensor> soft_thresh_fwd_cuda(
 
 std::vector<at::Tensor> soft_thresh_bwd_cuda(
     at::Tensor dy, 
-    at::Tensor input,
-    at::Tensor gain,
-    at::Tensor mag); 
+    at::Tensor din);
 
 
 // NOTE: AT_ASSERT has become AT_CHECK on master after 0.4.
@@ -31,14 +29,10 @@ std::vector<at::Tensor> soft_thresh_fwd(
 
 std::vector<at::Tensor> soft_thresh_bwd(
     at::Tensor dy, 
-    at::Tensor input,
-    at::Tensor gain,
-    at::Tensor mag) {
+    at::Tensor din) {
     CHECK_INPUT(dy);
-    CHECK_INPUT(input);
-    CHECK_INPUT(gain);
-    CHECK_INPUT(mag);
-    return soft_thresh_bwd_cuda(dy, input, gain, mag);
+    CHECK_INPUT(din);
+    return soft_thresh_bwd_cuda(dy, din);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

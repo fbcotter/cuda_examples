@@ -99,23 +99,16 @@ class SoftShrinkC(nn.Module):
 class SoftShrinkCUDA1(Function):
     @staticmethod
     def forward(ctx, x1, t1):
-        y, m, gain = soft_thresh_cuda.forward(x1, torch.tensor(t1))
-        ctx.save_for_backward(x1, gain, m)
+        y, din = soft_thresh_cuda.forward(x1, torch.tensor(t1))
+        ctx.save_for_backward(din)
         return y
 
     @staticmethod
     def backward(ctx, grad_y):
-        x, gain, m = ctx.saved_tensors
-        grad_x = None
-        grad_t = None
-        dx, dt = soft_thresh_cuda.backward(grad_y, x, gain, m)
-        if ctx.needs_input_grad[0]:
-            grad_x = dx
+        din, = ctx.saved_tensors
+        dx, dt = soft_thresh_cuda.backward(grad_y, din)
 
-        if ctx.needs_input_grad[1]:
-            grad_t = dt
-
-        return grad_x, grad_t
+        return dx, dt
 
 
 class SoftShrinkCUDA(nn.Module):
